@@ -7,6 +7,7 @@ import xarray as xr
 import rasterio
 from rasterio.transform import from_origin
 from rasterio.crs import CRS
+from pathlib import Path
 
 def load_config(config_path):
     with open(config_path, 'r') as file:
@@ -34,6 +35,7 @@ def get_crs_from_netcdf(ds):
 def process_point_cloud(config, input_path, output_path):
     print(f"Opening {input_path}...")
     
+    # Lazy load the dataset with chunking
     ds = xr.open_dataset(input_path, chunks={'point': config['processing']['chunk_size']})
     
     # 1. Determine Grid Bounds
@@ -63,12 +65,12 @@ def process_point_cloud(config, input_path, output_path):
     bands_config = config['output_bands']
     num_bands = len(bands_config)
     
-    # Accumulators for aggregating values
-    # We use Float64 for precision during accumulation
+    # Accumulators
+    # Float64 used during accumulation for precision, converted to Float32 at write time
     grid_sums = np.zeros((num_bands, height, width), dtype=np.float64)
     grid_counts = np.zeros((num_bands, height, width), dtype=np.uint32)
     
-    # Initialize min/max grids with appropriate infinity values
+    # Initialize min/max grids
     grid_mins = np.full((num_bands, height, width), np.inf, dtype=np.float64)
     grid_maxs = np.full((num_bands, height, width), -np.inf, dtype=np.float64)
 
@@ -76,13 +78,12 @@ def process_point_cloud(config, input_path, output_path):
     total_points = ds.sizes['point']
     chunk_size = config['processing']['chunk_size']
     
-    print(f"Rasterizing {total_points} points...")
+    print(f"Rasterizing {total_points} points in chunks...")
 
-    # Manual chunk iteration to control memory
     for i in range(0, total_points, chunk_size):
         subset = ds.isel(point=slice(i, i + chunk_size))
         
-        # Load coordinates
+        # Load spatial coordinates
         xs = subset['X'].values
         ys = subset['Y'].values
         
@@ -90,7 +91,7 @@ def process_point_cloud(config, input_path, output_path):
         cols = ((xs - min_x) / res).astype(np.int32)
         rows = ((max_y - ys) / res).astype(np.int32)
         
-        # Boundary check
+        # Boundary filter
         valid_mask = (cols >= 0) & (cols < width) & (rows >= 0) & (rows < height)
         
         if not np.any(valid_mask):
@@ -98,8 +99,6 @@ def process_point_cloud(config, input_path, output_path):
 
         rows = rows[valid_mask]
         cols = cols[valid_mask]
-        
-        # Flat indices for fast numpy aggregation
         flat_indices = rows * width + cols
         
         for band_idx, band_cfg in enumerate(bands_config):
@@ -107,10 +106,35 @@ def process_point_cloud(config, input_path, output_path):
             method = band_cfg['method']
             
             if var_name not in subset:
+                print(f"Skipping missing variable: {var_name}")
                 continue
-                
-            values = subset[var_name].values[valid_mask]
             
+            # --- UNIVERSAL DATA HANDLING ---
+            # Get the variable (lazy load)
+            data_var = subset[var_name]
+
+            # 1. Handle Hyperspectral Band Selection
+            if 'band_selection' in band_cfg:
+                target = band_cfg['band_selection']
+                try:
+                    # 'method=nearest' ensures we find the closest wavelength if exact match fails
+                    data_var = data_var.sel(band=target, method='nearest')
+                except Exception as e:
+                    print(f"Error selecting band {target} for {var_name}: {e}")
+                    continue
+            
+            # 2. Dimensionality Check
+            # By this point, the data MUST be 1D (only dependent on 'point').
+            # If it still has 2 dimensions (e.g. point, band), the config is missing 'band_selection'.
+            if len(data_var.dims) > 1:
+                print(f"Error: Variable '{var_name}' is multi-dimensional {data_var.dims}. "
+                      f"Please add 'band_selection' to config. Skipping.")
+                continue
+
+            # 3. Load values for this chunk
+            values = data_var.values[valid_mask]
+            
+            # 4. Aggregate
             if method == 'mean':
                 np.add.at(grid_sums[band_idx].ravel(), flat_indices, values)
                 np.add.at(grid_counts[band_idx].ravel(), flat_indices, 1)
@@ -118,10 +142,10 @@ def process_point_cloud(config, input_path, output_path):
                 np.add.at(grid_sums[band_idx].ravel(), flat_indices, 1)
             elif method == 'max':
                 np.maximum.at(grid_maxs[band_idx].ravel(), flat_indices, values)
-                np.add.at(grid_counts[band_idx].ravel(), flat_indices, 1) # Mark presence
+                np.add.at(grid_counts[band_idx].ravel(), flat_indices, 1) 
             elif method == 'min':
                 np.minimum.at(grid_mins[band_idx].ravel(), flat_indices, values)
-                np.add.at(grid_counts[band_idx].ravel(), flat_indices, 1) # Mark presence
+                np.add.at(grid_counts[band_idx].ravel(), flat_indices, 1) 
         
         sys.stdout.write(f"\rProcessed {min(i + chunk_size, total_points)} / {total_points}")
         sys.stdout.flush()
@@ -129,7 +153,6 @@ def process_point_cloud(config, input_path, output_path):
     print("\nFinalizing grid...")
 
     # 4. Finalize Aggregation
-    # Default to Float32 for GeoTIFF output to handle most data types cleanly
     final_raster = np.zeros((num_bands, height, width), dtype=np.float32)
     
     for band_idx, band_cfg in enumerate(bands_config):
@@ -140,26 +163,21 @@ def process_point_cloud(config, input_path, output_path):
         has_data_mask = counts > 0
         
         if method == 'mean':
-            # Perform division only where data exists
             final_raster[band_idx][has_data_mask] = (
                 grid_sums[band_idx][has_data_mask] / counts[has_data_mask]
             )
         elif method == 'count':
             final_raster[band_idx] = grid_sums[band_idx]
-            # For count, 0 is usually valid (no data), but we can still respect mask if needed
         elif method == 'max':
             final_raster[band_idx][has_data_mask] = grid_maxs[band_idx][has_data_mask]
         elif method == 'min':
             final_raster[band_idx][has_data_mask] = grid_mins[band_idx][has_data_mask]
 
-        # STRICT NO-INTERPOLATION:
-        # Apply Nodata value to any pixel that had 0 accumulated points
+        # Apply transparency (No Interpolation)
         final_raster[band_idx][~has_data_mask] = nodata
 
     # 5. Write GeoTIFF
     crs = get_crs_from_netcdf(ds)
-    
-    # Get global nodata value from first band configuration
     global_nodata = bands_config[0].get('nodata_val', 0)
 
     print(f"Writing to {output_path}...")
@@ -179,32 +197,50 @@ def process_point_cloud(config, input_path, output_path):
     with rasterio.open(output_path, 'w', **meta) as dst:
         for i in range(num_bands):
             dst.write(final_raster[i], i + 1)
+            
+            # Metadata Description
             var_name = bands_config[i]['variable']
-            # Try to get a clean description from NetCDF attributes
-            desc = ds[var_name].attrs.get('long_name', var_name)
+            desc = f"{var_name}"
+            
+            if 'band_selection' in bands_config[i]:
+                desc += f" ({bands_config[i]['band_selection']}nm)"
+                
             dst.set_band_description(i + 1, desc)
 
-    print("Done.")
+    print(f"Done. Saved to {output_path}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Convert NetCDF Point Cloud to GeoTIFF (No Interpolation)")
+    parser = argparse.ArgumentParser(description="Convert CF-NetCDF Point Cloud to GeoTIFF")
+    
+    # Input is now mandatory
+    parser.add_argument("-i", "--input", required=True, help="Input NetCDF file path")
+    
     parser.add_argument("-c", "--config", help="Path to config.yaml", default="config.yaml")
-    parser.add_argument("-i", "--input", help="Override input NetCDF file path")
     parser.add_argument("-o", "--output", help="Override output GeoTIFF file path")
     
     args = parser.parse_args()
 
     if not os.path.exists(args.config):
-        print(f"Config file not found: {args.config}")
+        print(f"Error: Config file not found: {args.config}")
+        sys.exit(1)
+        
+    if not os.path.exists(args.input):
+        print(f"Error: Input file not found: {args.input}")
         sys.exit(1)
 
+    # Load Config
     config = load_config(args.config)
     
-    input_file = args.input if args.input else config.get('input_file')
-    output_file = args.output if args.output else config.get('output_file')
+    # Determine Output Path Priority:
+    # 1. CLI Argument
+    # 2. Config File 'output_file'
+    # 3. Input Filename + .tif
+    if args.output:
+        output_file = args.output
+    elif config.get('output_file'):
+        output_file = config.get('output_file')
+    else:
+        # Fallback: input.nc -> input.tif
+        output_file = str(Path(args.input).with_suffix('.tif'))
 
-    if not input_file or not os.path.exists(input_file):
-        print(f"Input file not found: {input_file}")
-        sys.exit(1)
-
-    process_point_cloud(config, input_file, output_file)
+    process_point_cloud(config, args.input, output_file)

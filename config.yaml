@@ -1,21 +1,22 @@
-# Input and Output settings (Can be overridden by CLI)
-input_file: "2024-08-19-16-06-04-GMT_13_VNIR_1800_SN00845_FOVx2_geo_lines_60000_to_62805.nc"
-output_file: "output_raster.tif"
+# Default Output Name
+# This is used if -o is not passed in the CLI. 
+# If this is missing, the script defaults to {input_filename}.tif
+#output_file: "output_raster.tif"
 
 # Grid Settings
 grid:
   # The size of one pixel in the units of the CRS (meters)
   resolution: 0.5
   
-  # 'rounded' aligns the grid to integer coordinates (cleaner for tiling), 
+  # 'rounded' aligns the grid to integer coordinates, 
   # 'exact' uses the precise min/max of the point cloud.
-  bounds_strategy: "rounded"
+  bounds_strategy: "exact"
 
 # Processing Settings
 processing:
   # Chunk size for reading NetCDF. 
   # 500,000 is a conservative start. Increase if you have >16GB RAM.
-  chunk_size: 500000 
+  chunk_size: 5000000 
 
 # Visualization / Bands
 # Define what goes into the GeoTIFF channels.
@@ -25,16 +26,40 @@ processing:
 output_bands:
   - variable: "red"
     method: "mean"   # Options: mean, min, max, count
-    nodata_val: 0
+    nodata_val: -9999
   - variable: "green"
     method: "mean"
-    nodata_val: 0
+    nodata_val: -9999
   - variable: "blue"
     method: "mean"
-    nodata_val: 0
+    nodata_val: -9999
 
-# Example for Elevation Model (Uncomment to use)
+# #Example for Elevation Model (Uncomment to use)
 # output_bands:
 #   - variable: "Z"
-#     method: "max" # 'max' is standard for DSM (tops of trees/buildings)
-#     nodata_val: -9999.0
+#     method: "max" 
+#     nodata_val: -9999
+
+# Visualization: Standard False Color (Color Infrared)
+# Mapping: NIR -> Red, Red -> Green, Green -> Blue
+# output_bands:
+#   # --- Band 1 (GeoTIFF Red Channel) ---
+#   # Source: Near-Infrared (NIR) ~850nm
+#   - variable: "intensity"
+#     band_selection: 850.9
+#     method: "mean"
+#     nodata_val: -9999
+
+#   # --- Band 2 (GeoTIFF Green Channel) ---
+#   # Source: Visible Red ~650nm
+#   - variable: "intensity"
+#     band_selection: 650.1
+#     method: "mean"
+#     nodata_val: -9999
+
+#   # --- Band 3 (GeoTIFF Blue Channel) ---
+#   # Source: Visible Green ~550nm
+#   - variable: "intensity"
+#     band_selection: 551.3
+#     method: "mean"
+#     nodata_val: -9999
