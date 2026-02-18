@@ -34,8 +34,8 @@ output_bands:
   - {variable: "blue", method: "mean", nodata_val: -9999}
 ```
 
-### 2. Hyperspectral False Color (Snow/Ice Physics)
-Uses the `intensity` variable. This specific set highlights snow grain size and ice density by mapping NIR to Red and Mid-Infrared to Green.
+### 2. Hyperspectral False Color
+Uses the `intensity` variable. This specific example creates a false color image by mapping NIR to Red and Mid-Infrared to Green.
 ```yaml
 output_bands:
   - {variable: "intensity", band_selection: 994.3, method: "mean", nodata_val: -9999}
