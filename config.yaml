@@ -15,14 +15,10 @@ grid:
 # Processing Settings
 processing:
   # Chunk size for reading NetCDF. 
-  # 500,000 is a conservative start. Increase if you have >16GB RAM.
   chunk_size: 5000000 
 
 # Visualization / Bands
 # Define what goes into the GeoTIFF channels.
-# Common Nodata values: 
-#   For Float32: -9999.0
-#   For Byte (0-255 RGB): 0 (Warning: this makes true black transparent)
 output_bands:
   - variable: "red"
     method: "mean"   # Options: mean, min, max, count
