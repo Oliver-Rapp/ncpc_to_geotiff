@@ -1,0 +1,40 @@
+# Input and Output settings (Can be overridden by CLI)
+input_file: "2024-08-19-16-06-04-GMT_13_VNIR_1800_SN00845_FOVx2_geo_lines_60000_to_62805.nc"
+output_file: "output_raster.tif"
+
+# Grid Settings
+grid:
+  # The size of one pixel in the units of the CRS (meters)
+  resolution: 0.5
+  
+  # 'rounded' aligns the grid to integer coordinates (cleaner for tiling), 
+  # 'exact' uses the precise min/max of the point cloud.
+  bounds_strategy: "rounded"
+
+# Processing Settings
+processing:
+  # Chunk size for reading NetCDF. 
+  # 500,000 is a conservative start. Increase if you have >16GB RAM.
+  chunk_size: 500000 
+
+# Visualization / Bands
+# Define what goes into the GeoTIFF channels.
+# Common Nodata values: 
+#   For Float32: -9999.0
+#   For Byte (0-255 RGB): 0 (Warning: this makes true black transparent)
+output_bands:
+  - variable: "red"
+    method: "mean"   # Options: mean, min, max, count
+    nodata_val: 0
+  - variable: "green"
+    method: "mean"
+    nodata_val: 0
+  - variable: "blue"
+    method: "mean"
+    nodata_val: 0
+
+# Example for Elevation Model (Uncomment to use)
+# output_bands:
+#   - variable: "Z"
+#     method: "max" # 'max' is standard for DSM (tops of trees/buildings)
+#     nodata_val: -9999.0
