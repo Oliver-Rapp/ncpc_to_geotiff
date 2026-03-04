@@ -8,6 +8,7 @@ import rasterio
 from rasterio.transform import from_origin
 from rasterio.crs import CRS
 from pathlib import Path
+from urllib.parse import urlparse
 
 def load_config(config_path):
     with open(config_path, 'r') as file:
@@ -32,9 +33,16 @@ def get_crs_from_netcdf(ds):
     print("Warning: No CRS found. GeoTIFF will not be projected.")
     return None
 
+def is_opendap_url(path):
+    return path.startswith(("http://", "https://"))
+
 def process_point_cloud(config, input_path, output_path):
-    print(f"Opening {input_path}...")
-    
+    if is_opendap_url(input_path):
+        print(f"Connecting to OPeNDAP server: {input_path}")
+        print("Metadata will be read remotely; data is fetched in chunks during processing.")
+    else:
+        print(f"Opening {input_path}...")
+
     # Lazy load the dataset with chunking
     ds = xr.open_dataset(input_path, chunks={'point': config['processing']['chunk_size']})
     
@@ -78,7 +86,10 @@ def process_point_cloud(config, input_path, output_path):
     total_points = ds.sizes['point']
     chunk_size = config['processing']['chunk_size']
     
-    print(f"Rasterizing {total_points} points in chunks...")
+    if is_opendap_url(input_path):
+        print(f"Fetching and rasterizing {total_points} points in chunks (data downloaded per chunk)...")
+    else:
+        print(f"Rasterizing {total_points} points in chunks...")
 
     for i in range(0, total_points, chunk_size):
         subset = ds.isel(point=slice(i, i + chunk_size))
@@ -223,24 +234,31 @@ if __name__ == "__main__":
     if not os.path.exists(args.config):
         print(f"Error: Config file not found: {args.config}")
         sys.exit(1)
-        
-    if not os.path.exists(args.input):
+
+    if is_opendap_url(args.input) and args.input.endswith('.html'):
+        args.input = args.input[:-5]
+        print(f"Note: Stripped .html suffix from URL: {args.input}")
+
+    if not is_opendap_url(args.input) and not os.path.exists(args.input):
         print(f"Error: Input file not found: {args.input}")
         sys.exit(1)
 
     # Load Config
     config = load_config(args.config)
-    
+
     # Determine Output Path Priority:
     # 1. CLI Argument
     # 2. Config File 'output_file'
-    # 3. Input Filename + .tif
+    # 3. Input Filename + .tiff (in current directory for remote URLs)
     if args.output:
         output_file = args.output
     elif config.get('output_file'):
         output_file = config.get('output_file')
+    elif is_opendap_url(args.input):
+        # Extract filename from the URL path and write to current directory
+        url_stem = Path(urlparse(args.input).path).stem
+        output_file = url_stem + '.tiff'
     else:
-        # Fallback: input.nc -> input.tif
-        output_file = str(Path(args.input).with_suffix('.tif'))
+        output_file = str(Path(args.input).with_suffix('.tiff'))
 
     process_point_cloud(config, args.input, output_file)
